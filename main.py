@@ -31,7 +31,17 @@ class ApiClient:
     def post_json(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
         response = requests.post(url, json=payload, timeout=self.timeout)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        errors = data.get("errors") if isinstance(data, dict) else None
+        if errors:
+            messages = []
+            for error in errors:
+                if isinstance(error, dict):
+                    messages.append(str(error.get("message", error)))
+                else:
+                    messages.append(str(error))
+            raise ValueError(f"GraphQL query failed: {'; '.join(messages)}")
+        return data
 
     def get_json(self, url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         response = requests.get(url, params=params, timeout=self.timeout)
