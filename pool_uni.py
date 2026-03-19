@@ -214,7 +214,7 @@ def main():
         positions["eth_narrow"] = create_position(eth_price, 10, 8, 5)
 
     if "eth_wide" not in positions:
-        positions["eth_wide"] = create_position(eth_price, 60, 35, 5)
+        positions["eth_wide"] = create_position(eth_price, 50, 30, 5)
 
     if "sol_narrow" not in positions:
         positions["sol_narrow"] = create_position(sol_price, 15, 15, 0.5)
@@ -259,10 +259,11 @@ def main():
     # ===== МЕНЮ =====
     print("\n===== МЕНЮ =====")
     print("1 — показать статус")
-    print("2 — reset eth_narrow")
-    print("3 — reset eth_wide")
-    print("4 — reset sol_narrow")
-    print("5 — reset sol_wide")
+    print("2 — перезагрузка eth узкого")
+    print("3 — перезагрузка eth широкого")
+    print("4 — перезагрузка sol узкого")
+    print("5 — перезагрузка sol широкого")
+    print("6 — перезагрузка всего")
     print("0 — выход")
 
     choice = input("\nВыбор: ")
@@ -282,13 +283,18 @@ def main():
         reset_position(positions, "eth_narrow", eth_price, 10, 8, 5)
 
     elif choice == "3":
-        reset_position(positions, "eth_wide", eth_price, 60, 35, 5)
+        reset_position(positions, "eth_wide", eth_price, 50, 30, 5)
 
     elif choice == "4":
         reset_position(positions, "sol_narrow", sol_price, 15, 15, 0.5)
 
     elif choice == "5":
-        reset_position(positions, "sol_wide", sol_price, 60, 40, 0.5)
+        reset_position(positions, "sol_wide", sol_price, 60, 35, 0.5)
+    elif choice == "6":
+        reset_position(positions, "eth_narrow", eth_price, 10, 8, 5)
+        reset_position(positions, "eth_wide", eth_price, 50, 30, 5)
+        reset_position(positions, "sol_narrow", sol_price, 15, 15, 0.5)
+        reset_position(positions, "sol_wide", sol_price, 60, 35, 0.5)
 
     elif choice == "0":
         print("Выход")
