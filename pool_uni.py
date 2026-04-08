@@ -1,313 +1,306 @@
-import requests
-import math
+from __future__ import annotations
+
 import json
-import os
+import math
+from pathlib import Path
+from typing import Any
 
+import requests
+from flask import Flask, jsonify, redirect, render_template_string, request, url_for
+
+BASE_DIR = Path(__file__).resolve().parent
+FILE = BASE_DIR / "positions.json"
+
+POSITION_CONFIG: dict[str, dict[str, float | str]] = {
+    "eth_narrow": {"coin_id": "ethereum", "label": "ETH narrow", "plus": 10, "minus": 8, "step": 5},
+    "eth_wide": {"coin_id": "ethereum", "label": "ETH wide", "plus": 50, "minus": 30, "step": 5},
+    "sol_narrow": {"coin_id": "solana", "label": "SOL narrow", "plus": 15, "minus": 15, "step": 0.5},
+    "sol_wide": {"coin_id": "solana", "label": "SOL wide", "plus": 60, "minus": 35, "step": 0.5},
+}
+
+PAGE_TEMPLATE = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LP Tool</title>
+  <style>
+    :root {
+      --bg: #f4efe7;
+      --panel: #fffdf8;
+      --text: #1d1a16;
+      --muted: #6f655a;
+      --line: #d8cbbc;
+      --accent: #b55d34;
+      --ok: #2f7d4a;
+      --warn: #b7791f;
+      --bad: #b23a2f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      background: radial-gradient(circle at top, #fff7eb 0, var(--bg) 55%);
+      color: var(--text);
+    }
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+    }
+    h1 { margin: 0 0 8px; font-size: 40px; }
+    p { color: var(--muted); }
+    .actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin: 24px 0;
+    }
+    button, .link-btn {
+      border: 0;
+      border-radius: 999px;
+      background: var(--accent);
+      color: white;
+      padding: 10px 16px;
+      font: inherit;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 12px 30px rgba(64, 45, 25, 0.06);
+    }
+    .status {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 14px;
+      color: white;
+    }
+    .in_range { background: var(--ok); }
+    .above_range, .below_range { background: var(--bad); }
+    dl {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 6px 10px;
+      margin: 16px 0 0;
+    }
+    dt { color: var(--muted); }
+    dd { margin: 0; text-align: right; }
+    form { margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>LP Tool</h1>
+    <p>Tracks ETH and SOL liquidity ranges and lets you reset positions from the browser.</p>
+    <div class="actions">
+      <form method="post" action="{{ url_for('reset_all_route') }}">
+        <button type="submit">Reset all positions</button>
+      </form>
+      <a class="link-btn" href="{{ url_for('api_status') }}">Open JSON API</a>
+    </div>
+    <div class="cards">
+      {% for item in items %}
+      <section class="card">
+        <h2>{{ item.label }}</h2>
+        <span class="status {{ item.status_code }}">{{ item.status_label }}</span>
+        <dl>
+          <dt>Current</dt><dd>{{ '%.2f'|format(item.current_price) }}</dd>
+          <dt>Entry</dt><dd>{{ '%.2f'|format(item.entry) }}</dd>
+          <dt>Range</dt><dd>{{ '%.2f'|format(item.low) }} - {{ '%.2f'|format(item.high) }}</dd>
+          <dt>IL</dt><dd>{{ '%.4f'|format(item.il) }}%</dd>
+          <dt>Action</dt><dd>{{ item.action }}</dd>
+        </dl>
+        <form method="post" action="{{ url_for('reset_position_route', key=item.key) }}">
+          <button type="submit">Reset {{ item.label }}</button>
+        </form>
+      </section>
+      {% endfor %}
+    </div>
+  </div>
+</body>
+</html>
 """
-LP TOOL — полуавтоматическая система работы с пулами ликвидности
-
-Что делает:
-1. Запрашивает текущую цену ETH и SOL
-2. Создаёт позиции (если их нет)
-3. Хранит entry и диапазоны
-4. Считает IL (impermanent loss)
-5. Показывает статус:
-   - в диапазоне
-   - выше
-   - ниже
-6. Даёт действие
-7. Позволяет делать reset позиции
-
-Как использовать:
-1. Первый запуск → создаёт позиции
-2. Дальше просто запускаешь и смотришь статус
-3. Если пул выбило → закрываешь вручную (в DeFi)
-4. Потом вызываешь reset_position()
-"""
-
-FILE = "positions.json"
 
 
-# =========================
-# API
-# =========================
-
-def get_price(coin_id):
-    """Получаем цену с CoinGecko"""
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
-    return requests.get(url).json()[coin_id]["usd"]
+def get_price(coin_id: str) -> float:
+    url = "https://api.coingecko.com/api/v3/simple/price"
+    response = requests.get(url, params={"ids": coin_id, "vs_currencies": "usd"}, timeout=20)
+    response.raise_for_status()
+    return float(response.json()[coin_id]["usd"])
 
 
-# =========================
-# МАТЕМАТИКА
-# =========================
-
-def calc_range(price, plus_pct, minus_pct):
-    """Считаем диапазон от entry"""
+def calc_range(price: float, plus_pct: float, minus_pct: float) -> tuple[float, float]:
     upper = price * (1 + plus_pct / 100)
     lower = price * (1 - minus_pct / 100)
     return lower, upper
 
 
-def round_price(price, step, direction):
-    """
-    Округление под шаг (tick)
-
-    direction:
-    - down → вниз (для lower)
-    - up   → вверх (для upper)
-    """
+def round_price(price: float, step: float, direction: str) -> float:
     if direction == "down":
         return math.floor(price / step) * step
     return math.ceil(price / step) * step
 
 
-def calc_il(entry_price, current_price):
-    """
-    Impermanent Loss
-
-    формула:
-    IL = 2*sqrt(r)/(1+r) - 1
-    """
-    r = current_price / entry_price
-    return (2 * math.sqrt(r) / (1 + r) - 1) * 100
+def calc_il(entry_price: float, current_price: float) -> float:
+    ratio = current_price / entry_price
+    return (2 * math.sqrt(ratio) / (1 + ratio) - 1) * 100
 
 
-# =========================
-# ХРАНЕНИЕ
-# =========================
-
-def load_positions():
-    """Загружаем позиции из файла"""
-    if not os.path.exists(FILE):
+def load_positions() -> dict[str, Any]:
+    if not FILE.exists():
         return {}
-    with open(FILE, "r") as f:
-        return json.load(f)
+    return json.loads(FILE.read_text(encoding="utf-8"))
 
 
-def save_positions(data):
-    """Сохраняем позиции"""
-    with open(FILE, "w") as f:
-        json.dump(data, f, indent=2)
+def save_positions(data: dict[str, Any]) -> None:
+    FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
-# =========================
-# СОЗДАНИЕ ПОЗИЦИИ
-# =========================
-
-def create_position(price, plus, minus, step):
-    """Создаём новую позицию"""
+def create_position(price: float, plus: float, minus: float, step: float) -> dict[str, float]:
     low, high = calc_range(price, plus, minus)
-
-    low = round_price(low, step, "down")
-    high = round_price(high, step, "up")
-
     return {
         "entry": price,
-        "low": low,
-        "high": high
+        "low": round_price(low, step, "down"),
+        "high": round_price(high, step, "up"),
     }
 
 
-# =========================
-# АНАЛИЗ ПОЗИЦИИ
-# =========================
+def ensure_positions(prices: dict[str, float]) -> dict[str, Any]:
+    positions = load_positions()
+    updated = False
 
-def check_position(name, pos, current_price):
-    """
-    Проверяем позицию и даём действие
-    """
-    low = pos["low"]
-    high = pos["high"]
-    entry = pos["entry"]
+    for key, config in POSITION_CONFIG.items():
+        if key in positions:
+            continue
+        positions[key] = create_position(
+            price=prices[str(config["coin_id"])],
+            plus=float(config["plus"]),
+            minus=float(config["minus"]),
+            step=float(config["step"]),
+        )
+        updated = True
 
-    # статус
+    if updated:
+        save_positions(positions)
+
+    return positions
+
+
+def status_payload(key: str, position: dict[str, float], current_price: float) -> dict[str, Any]:
+    low = float(position["low"])
+    high = float(position["high"])
+    entry = float(position["entry"])
+
     if current_price < low:
-        status = "ниже диапазона"
+        status_code = "below_range"
+        status_label = "Below range"
+        action = "Market moved down. Consider closing and reopening lower."
     elif current_price > high:
-        status = "выше диапазона"
+        status_code = "above_range"
+        status_label = "Above range"
+        action = "Market moved up. Position is likely in stables, reset higher."
     else:
-        status = "в диапазоне"
+        status_code = "in_range"
+        status_label = "In range"
+        action = "No action needed. Keep farming fees."
 
     il = calc_il(entry, current_price)
-    broken = status != "в диапазоне"
-
-    print(f"{name}")
-    print(f"  Entry: {entry:.2f}")
-    print(f"  Сейчас: {current_price:.2f}")
-    print(f"  Диапазон: {low:.2f} — {high:.2f}")
-    print(f"  Статус: {status}")
-    if abs(il) < 0.01:
-        print(f"  IL: {il:.5f}%")
-    else:
-        print(f"  IL: {il:.2f}%")
-
-    print("  Действие:")
-
-    if not broken:
-        print("    → ничего не делать (фарм комиссий)")
-
-    else:
-        print("    ⚠ пул вне диапазона")
-
-        if status == "выше диапазона":
-            print("    → рынок вырос")
-            print("    → позиция в стейблах")
-            print("    → закрыть и открыть выше")
-
-        else:
-            print("    → рынок упал")
-            print("    → позиция в активе")
-
-            if il < -5:
-                print("    → IL заметный")
-                print("    → можно перезайти ниже")
-            else:
-                print("    → можно держать (накопление)")
-
-    print()
-    return broken
-
-
-# =========================
-# RESET ПОЗИЦИИ
-# =========================
-
-def reset_position(positions, key, current_price, plus, minus, step):
-    """
-    Пересоздание позиции
-
-    Когда использовать:
-    - вышел вверх → всегда
-    - вниз → по ситуации
-    """
-    print(f"\n[RESET] {key}")
-
-    low, high = calc_range(current_price, plus, minus)
-
-    low = round_price(low, step, "down")
-    high = round_price(high, step, "up")
-
-    positions[key] = {
-        "entry": current_price,
+    return {
+        "key": key,
+        "label": str(POSITION_CONFIG[key]["label"]),
+        "coin_id": str(POSITION_CONFIG[key]["coin_id"]),
+        "entry": entry,
         "low": low,
-        "high": high
+        "high": high,
+        "current_price": current_price,
+        "status_code": status_code,
+        "status_label": status_label,
+        "il": il,
+        "action": action,
     }
 
-    print(f"  Новый entry: {current_price:.2f}")
-    print(f"  Новый диапазон: {low:.2f} — {high:.2f}\n")
+
+def fetch_snapshot() -> dict[str, Any]:
+    prices = {
+        "ethereum": get_price("ethereum"),
+        "solana": get_price("solana"),
+    }
+    positions = ensure_positions(prices)
+
+    items = [
+        status_payload(key, positions[key], prices[str(config["coin_id"])])
+        for key, config in POSITION_CONFIG.items()
+    ]
+    return {"prices": prices, "items": items}
 
 
-# =========================
-# ОСНОВНОЙ СЦЕНАРИЙ
-# =========================
+def reset_position_by_key(key: str) -> dict[str, Any]:
+    if key not in POSITION_CONFIG:
+        raise KeyError(key)
 
-def main():
+    config = POSITION_CONFIG[key]
+    current_price = get_price(str(config["coin_id"]))
     positions = load_positions()
-
-    eth_price = get_price("ethereum")
-    sol_price = get_price("solana")
-
-    # ===== СОЗДАНИЕ (если нет) =====
-
-    if "eth_narrow" not in positions:
-        positions["eth_narrow"] = create_position(eth_price, 10, 8, 5)
-
-    if "eth_wide" not in positions:
-        positions["eth_wide"] = create_position(eth_price, 50, 30, 5)
-
-    if "sol_narrow" not in positions:
-        positions["sol_narrow"] = create_position(sol_price, 15, 15, 0.5)
-
-    if "sol_wide" not in positions:
-        positions["sol_wide"] = create_position(sol_price, 60, 40, 0.5)
-
+    positions[key] = create_position(
+        price=current_price,
+        plus=float(config["plus"]),
+        minus=float(config["minus"]),
+        step=float(config["step"]),
+    )
     save_positions(positions)
-
-    # ===== ПРОВЕРКА =====
-
-    print("\n========== ETH ==========\n")
-    check_position("ETH узкий", positions["eth_narrow"], eth_price)
-    check_position("ETH длинный", positions["eth_wide"], eth_price)
-
-    print("\n========== SOL ==========\n")
-    check_position("SOL узкий", positions["sol_narrow"], sol_price)
-    check_position("SOL длинный", positions["sol_wide"], sol_price)
+    return status_payload(key, positions[key], current_price)
 
 
-def main():
-    positions = load_positions()
-
-    eth_price = get_price("ethereum")
-    sol_price = get_price("solana")
-
-    # создание позиций (если нет)
-    if "eth_narrow" not in positions:
-        positions["eth_narrow"] = create_position(eth_price, 10, 8, 5)
-
-    if "eth_wide" not in positions:
-        positions["eth_wide"] = create_position(eth_price, 60, 35, 5)
-
-    if "sol_narrow" not in positions:
-        positions["sol_narrow"] = create_position(sol_price, 15, 15, 0.5)
-
-    if "sol_wide" not in positions:
-        positions["sol_wide"] = create_position(sol_price, 60, 40, 0.5)
-
-    save_positions(positions)
-
-    # ===== МЕНЮ =====
-    print("\n===== МЕНЮ =====")
-    print("1 — показать статус")
-    print("2 — перезагрузка eth узкого")
-    print("3 — перезагрузка eth широкого")
-    print("4 — перезагрузка sol узкого")
-    print("5 — перезагрузка sol широкого")
-    print("6 — перезагрузка всего")
-    print("0 — выход")
-
-    choice = input("\nВыбор: ")
-
-    # ===== ДЕЙСТВИЯ =====
-
-    if choice == "1":
-        print("\n========== ETH ==========\n")
-        check_position("ETH узкий", positions["eth_narrow"], eth_price)
-        check_position("ETH длинный", positions["eth_wide"], eth_price)
-
-        print("\n========== SOL ==========\n")
-        check_position("SOL узкий", positions["sol_narrow"], sol_price)
-        check_position("SOL длинный", positions["sol_wide"], sol_price)
-
-    elif choice == "2":
-        reset_position(positions, "eth_narrow", eth_price, 10, 8, 5)
-
-    elif choice == "3":
-        reset_position(positions, "eth_wide", eth_price, 50, 30, 5)
-
-    elif choice == "4":
-        reset_position(positions, "sol_narrow", sol_price, 15, 15, 0.5)
-
-    elif choice == "5":
-        reset_position(positions, "sol_wide", sol_price, 60, 35, 0.5)
-    elif choice == "6":
-        reset_position(positions, "eth_narrow", eth_price, 10, 8, 5)
-        reset_position(positions, "eth_wide", eth_price, 50, 30, 5)
-        reset_position(positions, "sol_narrow", sol_price, 15, 15, 0.5)
-        reset_position(positions, "sol_wide", sol_price, 60, 35, 0.5)
-
-    elif choice == "0":
-        print("Выход")
-        return
-
-    else:
-        print("Неверный выбор")
-
-    # сохраняем после любого действия
-    save_positions(positions)
+def reset_all_positions() -> dict[str, Any]:
+    results: dict[str, Any] = {}
+    for key in POSITION_CONFIG:
+        results[key] = reset_position_by_key(key)
+    return results
 
 
+def create_app() -> Flask:
+    app = Flask(__name__)
+
+    @app.get("/")
+    def index() -> str:
+        snapshot = fetch_snapshot()
+        return render_template_string(PAGE_TEMPLATE, items=snapshot["items"])
+
+    @app.get("/api/status")
+    def api_status():
+        return jsonify(fetch_snapshot())
+
+    @app.post("/reset/<key>")
+    def reset_position_route(key: str):
+        result = reset_position_by_key(key)
+        if request.accept_mimetypes.best == "application/json":
+            return jsonify(result)
+        return redirect(url_for("index"))
+
+    @app.post("/reset-all")
+    def reset_all_route():
+        results = reset_all_positions()
+        if request.accept_mimetypes.best == "application/json":
+            return jsonify(results)
+        return redirect(url_for("index"))
+
+    return app
+
+
+app = create_app()
 
 
 if __name__ == "__main__":
-    main()
+    app.run(debug=True)
