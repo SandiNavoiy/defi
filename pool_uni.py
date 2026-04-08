@@ -12,15 +12,15 @@ BASE_DIR = Path(__file__).resolve().parent
 FILE = BASE_DIR / "positions.json"
 
 POSITION_CONFIG: dict[str, dict[str, float | str]] = {
-    "eth_narrow": {"coin_id": "ethereum", "label": "ETH narrow", "plus": 10, "minus": 8, "step": 5},
-    "eth_wide": {"coin_id": "ethereum", "label": "ETH wide", "plus": 50, "minus": 30, "step": 5},
-    "sol_narrow": {"coin_id": "solana", "label": "SOL narrow", "plus": 15, "minus": 15, "step": 0.5},
-    "sol_wide": {"coin_id": "solana", "label": "SOL wide", "plus": 60, "minus": 35, "step": 0.5},
+    "eth_narrow": {"coin_id": "ethereum", "label": "ETH узкий", "plus": 10, "minus": 8, "step": 5},
+    "eth_wide": {"coin_id": "ethereum", "label": "ETH широкий", "plus": 50, "minus": 30, "step": 5},
+    "sol_narrow": {"coin_id": "solana", "label": "SOL узкий", "plus": 15, "minus": 15, "step": 0.5},
+    "sol_wide": {"coin_id": "solana", "label": "SOL широкий", "plus": 60, "minus": 35, "step": 0.5},
 }
 
 PAGE_TEMPLATE = """
 <!doctype html>
-<html lang="en">
+<html lang="ru">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -103,12 +103,12 @@ PAGE_TEMPLATE = """
 <body>
   <div class="wrap">
     <h1>LP Tool</h1>
-    <p>Tracks ETH and SOL liquidity ranges and lets you reset positions from the browser.</p>
+    <p>Отслеживает диапазоны ликвидности ETH и SOL и позволяет перезагружать позиции из браузера.</p>
     <div class="actions">
       <form method="post" action="{{ url_for('reset_all_route') }}">
-        <button type="submit">Reset all positions</button>
+        <button type="submit">Перезагрузить все позиции</button>
       </form>
-      <a class="link-btn" href="{{ url_for('api_status') }}">Open JSON API</a>
+      <a class="link-btn" href="{{ url_for('api_status') }}">Открыть JSON API</a>
     </div>
     <div class="cards">
       {% for item in items %}
@@ -116,14 +116,14 @@ PAGE_TEMPLATE = """
         <h2>{{ item.label }}</h2>
         <span class="status {{ item.status_code }}">{{ item.status_label }}</span>
         <dl>
-          <dt>Current</dt><dd>{{ '%.2f'|format(item.current_price) }}</dd>
-          <dt>Entry</dt><dd>{{ '%.2f'|format(item.entry) }}</dd>
-          <dt>Range</dt><dd>{{ '%.2f'|format(item.low) }} - {{ '%.2f'|format(item.high) }}</dd>
+          <dt>Сейчас</dt><dd>{{ '%.2f'|format(item.current_price) }}</dd>
+          <dt>Вход</dt><dd>{{ '%.2f'|format(item.entry) }}</dd>
+          <dt>Диапазон</dt><dd>{{ '%.2f'|format(item.low) }} - {{ '%.2f'|format(item.high) }}</dd>
           <dt>IL</dt><dd>{{ '%.4f'|format(item.il) }}%</dd>
-          <dt>Action</dt><dd>{{ item.action }}</dd>
+          <dt>Действие</dt><dd>{{ item.action }}</dd>
         </dl>
         <form method="post" action="{{ url_for('reset_position_route', key=item.key) }}">
-          <button type="submit">Reset {{ item.label }}</button>
+          <button type="submit">Перезагрузить {{ item.label }}</button>
         </form>
       </section>
       {% endfor %}
@@ -205,16 +205,16 @@ def status_payload(key: str, position: dict[str, float], current_price: float) -
 
     if current_price < low:
         status_code = "below_range"
-        status_label = "Below range"
-        action = "Market moved down. Consider closing and reopening lower."
+        status_label = "Ниже диапазона"
+        action = "Рынок упал. Стоит подумать о закрытии и переоткрытии ниже."
     elif current_price > high:
         status_code = "above_range"
-        status_label = "Above range"
-        action = "Market moved up. Position is likely in stables, reset higher."
+        status_label = "Выше диапазона"
+        action = "Рынок вырос. Позиция, вероятно, в стейблах. Перезагрузите выше."
     else:
         status_code = "in_range"
-        status_label = "In range"
-        action = "No action needed. Keep farming fees."
+        status_label = "В диапазоне"
+        action = "Ничего делать не нужно. Продолжайте фармить комиссии."
 
     il = calc_il(entry, current_price)
     return {
