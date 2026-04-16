@@ -12,7 +12,7 @@ BASE_DIR = Path(__file__).resolve().parent
 FILE = BASE_DIR / "positions.json"
 
 POSITION_CONFIG: dict[str, dict[str, float | str]] = {
-    "eth_narrow": {"coin_id": "ethereum", "label": "ETH узкий", "plus": 10, "minus": 8, "step": 5},
+    "eth_narrow": {"coin_id": "ethereum", "label": "ETH узкий", "plus": 25, "minus": 25, "step": 5},
     "eth_wide": {"coin_id": "ethereum", "label": "ETH широкий", "plus": 50, "minus": 30, "step": 5},
     "sol_narrow": {"coin_id": "solana", "label": "SOL узкий", "plus": 15, "minus": 15, "step": 0.5},
     "sol_wide": {"coin_id": "solana", "label": "SOL широкий", "plus": 60, "minus": 35, "step": 0.5},
