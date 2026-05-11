@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timezone
 from threading import Lock
 from typing import Any
+from urllib.parse import urlencode
 
 import requests
 from flask import Flask, jsonify, redirect, render_template_string, request, url_for
@@ -178,6 +179,16 @@ PAGE_TEMPLATE = """
       white-space: nowrap;
     }
     th { color: var(--muted); font-weight: 600; }
+    th a {
+      color: inherit;
+      display: inline-flex;
+      justify-content: flex-end;
+      gap: 4px;
+      text-decoration: none;
+      width: 100%;
+    }
+    th a:hover { color: var(--accent); }
+    .sort-mark { min-width: 10px; }
     .num { text-align: right; }
     .ok { color: var(--good); font-weight: 600; }
     .warn { color: var(--warn); font-weight: 600; }
@@ -224,8 +235,11 @@ PAGE_TEMPLATE = """
           <label for="sort">Сортировка</label>
           <select id="sort" name="sort">
             <option value="supply_desc" {% if sort == 'supply_desc' %}selected{% endif %}>Вклад: выше</option>
+            <option value="supply_asc" {% if sort == 'supply_asc' %}selected{% endif %}>Вклад: ниже</option>
             <option value="borrow_asc" {% if sort == 'borrow_asc' %}selected{% endif %}>Заем: ниже</option>
+            <option value="borrow_desc" {% if sort == 'borrow_desc' %}selected{% endif %}>Заем: выше</option>
             <option value="tvl_desc" {% if sort == 'tvl_desc' %}selected{% endif %}>TVL: выше</option>
+            <option value="tvl_asc" {% if sort == 'tvl_asc' %}selected{% endif %}>TVL: ниже</option>
           </select>
         </div>
         <div>
@@ -275,9 +289,21 @@ PAGE_TEMPLATE = """
             <th>Протокол</th>
             <th>Актив</th>
             <th>Рынок</th>
-            <th class="num">Вклад %</th>
-            <th class="num">Заем %</th>
-            <th class="num">TVL, USD</th>
+            <th class="num">
+              <a href="{{ sort_links.supply }}" title="Сортировать по Вклад %">
+                <span>Вклад %</span><span class="sort-mark">{{ sort_marks.supply }}</span>
+              </a>
+            </th>
+            <th class="num">
+              <a href="{{ sort_links.borrow }}" title="Сортировать по Заем %">
+                <span>Заем %</span><span class="sort-mark">{{ sort_marks.borrow }}</span>
+              </a>
+            </th>
+            <th class="num">
+              <a href="{{ sort_links.tvl }}" title="Сортировать по TVL">
+                <span>TVL, USD</span><span class="sort-mark">{{ sort_marks.tvl }}</span>
+              </a>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -373,6 +399,43 @@ def format_usd(value: float | None) -> str:
     if value is None:
         return "n/a"
     return f"${value:,.0f}"
+
+
+def sort_rows_by_numeric(rows: list[dict[str, Any]], field: str, descending: bool) -> None:
+    """Sorts numeric rows while keeping missing values at the bottom."""
+    def sort_value(row: dict[str, Any]) -> tuple[bool, float]:
+        value = row[field]
+        if value is None:
+            return True, 0.0
+        numeric = float(value)
+        return False, -numeric if descending else numeric
+
+    rows.sort(
+        key=sort_value
+    )
+
+
+def build_sort_url(target_sort: str) -> str:
+    """Builds a sort URL preserving the current filters."""
+    args = request.args.to_dict(flat=False)
+    args["sort"] = [target_sort]
+    return f"?{urlencode(args, doseq=True)}"
+
+
+def next_sort_for(column: str, current_sort: str) -> str:
+    """Returns the next sort direction for a table header click."""
+    desc_sort = f"{column}_desc"
+    asc_sort = f"{column}_asc"
+    return asc_sort if current_sort == desc_sort else desc_sort
+
+
+def sort_mark_for(column: str, current_sort: str) -> str:
+    """Returns a compact visual marker for the active sort column."""
+    if current_sort == f"{column}_desc":
+        return "↓"
+    if current_sort == f"{column}_asc":
+        return "↑"
+    return ""
 
 
 def now_utc_str() -> str:
@@ -663,18 +726,34 @@ def apply_filters(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dic
         and (not asset_filter or asset_filter in row["symbol"].upper())
     ]
 
-    if sort_key == "borrow_asc":
-        filtered.sort(key=lambda x: x["borrow_rate"] if x["borrow_rate"] is not None else 10**9)
-    elif sort_key == "tvl_desc":
-        filtered.sort(key=lambda x: x["tvl_usd"] if x["tvl_usd"] is not None else -1, reverse=True)
-    else:
-        filtered.sort(key=lambda x: x["supply_rate"] if x["supply_rate"] is not None else -1, reverse=True)
+    sort_fields = {
+        "supply": "supply_rate",
+        "borrow": "borrow_rate",
+        "tvl": "tvl_usd",
+    }
+    sort_parts = sort_key.rsplit("_", 1)
+    if len(sort_parts) != 2 or sort_parts[0] not in sort_fields or sort_parts[1] not in {"asc", "desc"}:
+        sort_key = "supply_desc"
+
+    sort_column, sort_direction = sort_key.rsplit("_", 1)
+    sort_rows_by_numeric(filtered, sort_fields[sort_column], descending=sort_direction == "desc")
+
+    sort_links = {
+        column: build_sort_url(next_sort_for(column, sort_key))
+        for column in sort_fields
+    }
+    sort_marks = {
+        column: sort_mark_for(column, sort_key)
+        for column in sort_fields
+    }
 
     return filtered, {
         "selected_chains": selected_chains,
         "selected_protocols": selected_protocols,
         "asset_filter": asset_filter,
         "sort": sort_key,
+        "sort_links": sort_links,
+        "sort_marks": sort_marks,
         "min_tvl": int(min_tvl),
     }
 
