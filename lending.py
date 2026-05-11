@@ -16,12 +16,32 @@ COMPOUND_MARKETS_URL = "https://raw.githubusercontent.com/woof-software/compound
 FLUID_LENDING_URL = "https://api.fluid.instadapp.io/v2/lending/{chain_id}/tokens"
 FLUID_BORROWING_URL = "https://api.fluid.instadapp.io/v2/borrowing/{chain_id}/vaults"
 
+ETHEREUM_CHAIN_ID = 1
 ARBITRUM_CHAIN_ID = 42161
 BASE_CHAIN_ID = 8453
-SUPPORTED_CHAINS = ("Arbitrum", "Base")
+SUPPORTED_CHAINS = ("Ethereum", "Arbitrum", "Base")
 TARGET_PROTOCOLS = ("Aave", "Fluid", "Compound")
 
+AAVE_CHAIN_ALIASES = {
+    "ethereum": "Ethereum",
+    "ethereum mainnet": "Ethereum",
+    "mainnet": "Ethereum",
+    "arbitrum": "Arbitrum",
+    "arbitrum one": "Arbitrum",
+    "base": "Base",
+    "base mainnet": "Base",
+}
+
+SYMBOL_REPLACEMENTS = {
+    "₮": "T",
+}
+
 RPC_ENDPOINTS_BY_CHAIN = {
+    "mainnet": [
+        "https://ethereum-rpc.publicnode.com",
+        "https://rpc.ankr.com/eth",
+        "https://eth.llamarpc.com",
+    ],
     "arbitrum": [
         "https://arb1.arbitrum.io/rpc",
         "https://arbitrum-one-rpc.publicnode.com",
@@ -34,11 +54,13 @@ RPC_ENDPOINTS_BY_CHAIN = {
 }
 
 CHAIN_NAME_BY_SLUG = {
+    "mainnet": "Ethereum",
     "arbitrum": "Arbitrum",
     "base": "Base",
 }
 
 CHAIN_ID_BY_NAME = {
+    "Ethereum": ETHEREUM_CHAIN_ID,
     "Arbitrum": ARBITRUM_CHAIN_ID,
     "Base": BASE_CHAIN_ID,
 }
@@ -315,6 +337,30 @@ def as_float(value: Any) -> float | None:
         return None
 
 
+def nested_get(data: Any, *keys: str) -> Any:
+    """Safely reads nested dictionaries returned by external APIs."""
+    current = data
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def normalize_chain_name(value: Any) -> str:
+    """Normalizes chain names from Aave API to local filter labels."""
+    raw = str(value or "").strip()
+    return AAVE_CHAIN_ALIASES.get(raw.lower(), raw)
+
+
+def normalize_symbol(value: Any) -> str:
+    """Normalizes token symbols that include characters awkward for filters/logs."""
+    symbol = str(value or "").strip()
+    for old, new in SYMBOL_REPLACEMENTS.items():
+        symbol = symbol.replace(old, new)
+    return symbol
+
+
 def format_pct(value: float | None) -> str:
     """Форматирует процентную ставку."""
     if value is None:
@@ -338,7 +384,7 @@ def aave_rows() -> list[dict[str, Any]]:
     """Собирает ставки Aave напрямую через официальный GraphQL API."""
     query = """
     query {
-      markets(request: { chainIds: [42161, 8453] }) {
+      markets(request: { chainIds: [1, 42161, 8453] }) {
         chain { name }
         reserves {
           underlyingToken { symbol }
@@ -356,21 +402,22 @@ def aave_rows() -> list[dict[str, Any]]:
         raise requests.HTTPError(str(payload["errors"]))
 
     rows: list[dict[str, Any]] = []
-    for market in payload["data"]["markets"]:
-        chain_name = str(market["chain"]["name"])
+    for market in nested_get(payload, "data", "markets") or []:
+        chain_name = normalize_chain_name(nested_get(market, "chain", "name"))
         if chain_name not in SUPPORTED_CHAINS:
             continue
 
-        for reserve in market["reserves"]:
-            symbol = str(reserve["underlyingToken"]["symbol"])
-            supply_raw = as_float(reserve["supplyInfo"]["apy"]["value"]) or 0.0
-            borrow_raw = None
-            if reserve.get("borrowInfo"):
-                borrow_raw = as_float(reserve["borrowInfo"]["apy"]["value"])
+        for reserve in market.get("reserves") or []:
+            symbol = normalize_symbol(nested_get(reserve, "underlyingToken", "symbol"))
+            if not symbol:
+                continue
+
+            supply_raw = as_float(nested_get(reserve, "supplyInfo", "apy", "value")) or 0.0
+            borrow_raw = as_float(nested_get(reserve, "borrowInfo", "apy", "value"))
 
             supply_rate = supply_raw * 100.0
             borrow_rate = None if borrow_raw is None else borrow_raw * 100.0
-            tvl_usd = as_float(reserve["size"]["usd"]) or 0.0
+            tvl_usd = as_float(nested_get(reserve, "size", "usd")) or 0.0
 
             rows.append(
                 {
@@ -448,7 +495,7 @@ def compound_rows() -> list[dict[str, Any]]:
     payload = response.json()
 
     rows: list[dict[str, Any]] = []
-    for chain_slug in ("arbitrum", "base"):
+    for chain_slug in ("mainnet", "arbitrum", "base"):
         markets = payload["markets"].get(chain_slug, {})
         chain_name = CHAIN_NAME_BY_SLUG[chain_slug]
 
